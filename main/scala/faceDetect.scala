@@ -22,7 +22,7 @@ object faceDetect {
     val accessToken = props.getProperty("access_token")
     val detectUrl = aiHost + "/detect"
 
-    val downloadHttpImage = udf((imagePath: String) => {
+    def downloadHttpImage(imagePath: String): Array[Byte] = {
       /**
         * imagePath : relative path of image file under http file server root path,
         * eg "images/000001/image1.jpg", "images" is under "/var/www/html/"
@@ -36,9 +36,9 @@ object faceDetect {
         println(s"download image failed:$imagePath,${rsp.body.toString}")
         new Array[Byte](0)
       }
-    })
+    }
 
-    val getFaceToken = udf((imageStream: Array[Byte]) => {
+    def getFaceToken(imageStream: Array[Byte]): Array[String] = {
       /**
         * imageStream : Array[Byte] type of image file content
         * return : faceToken Array, if got no face it would be an empty Array
@@ -58,7 +58,7 @@ object faceDetect {
       } else {
         new Array[String](0)
       }
-    })
+    }
 
     val spark = SparkSession.builder().appName("detect_face_in_video").master("local[*]").getOrCreate()
     // consume kafka ods topic messages which struct like ("key"->taskID,"value"->eventTime,imagePath)
@@ -84,16 +84,19 @@ object faceDetect {
 
     // use imagePath to download image file from http file server and then use file to detect faceToken,
     // result dataFrame should be "taskID,eventTime,imagePath,faceTokens"
-    val df_faceToken = df_format.select($"taskID", $"eventTime", $"imagePath", downloadHttpImage($"imagePath").alias("imageByte"))
-      .select($"taskID", $"eventTime", $"imagePath", getFaceToken($"imageByte").alias("faceTokens"))
-      .select(concat_ws(",", $"taskID", $"eventTime", $"imagePath", $"faceTokens").alias("value"))
+    val df_faceToken = df_format.mapPartitions(part => {
+      part.map(row => {
+        (row.getAs[String]("taskID"), row.getAs[String]("eventTime"), row.getAs[String]("imagePath"),
+          getFaceToken(downloadHttpImage(row.getAs[String]("imagePath"))))
+      })
+    }).select(concat_ws(",", $"_1", $"_2", $"_3", $"_4").alias("value"))
 
     val task = df_faceToken.writeStream
       .format("kafka")
       .option("kafka.bootstrap.servers", dwBrokers)
 
       .option("topic", dwTopic)
-      .option("checkpointLocation", "src/main/checkpoint/faceDetect")
+      .option("checkpointLocation", "hdfs://master:9898/checkpoints/AI5/faceDetec")
       .start()
 
     task.awaitTermination()
