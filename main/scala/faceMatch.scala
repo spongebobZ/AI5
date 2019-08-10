@@ -22,7 +22,7 @@ object faceMatch {
     val esIP = esHost.split(":")(0)
     val esPort = esHost.split(":")(1)
     val props = new Properties()
-    props.load(new FileInputStream("src/main/resources/accessToken.properties"))
+    props.load(new FileInputStream("/data/spark-submit-scripts/accessToken.properties"))
     val accessToken = props.getProperty("access_token")
     val matchUrl = aiHost + "/search"
 
@@ -74,7 +74,7 @@ object faceMatch {
     }
 
 
-    val spark = SparkSession.builder().appName("match_faces_in_aimDB").master("local[*]")
+    val spark = SparkSession.builder().appName(s"match_faces_in_aimDB_$taskID")
       .config(ConfigurationOptions.ES_NODES, esIP)
       .config(ConfigurationOptions.ES_PORT, esPort)
       .config(ConfigurationOptions.ES_NODES_WAN_ONLY, "true")
@@ -115,7 +115,7 @@ object faceMatch {
     // sink final Dataframe to es
     val task = df_matchFace.writeStream
       .format("es")
-      .option("checkpointLocation", "hdfs://master:9898/checkpoints/AI5/faceMatch")
+      .option("checkpointLocation", s"/data/checkpoints/faceMatch_$taskID")
       .start(taskID + "/" + "matchResult")
 
     task.awaitTermination()

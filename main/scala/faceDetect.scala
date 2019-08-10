@@ -18,8 +18,9 @@ object faceDetect {
     val Array(odsBrokers, odsTopic, httpHost, aiHost, dwBrokers, dwTopic) = args
     val uri = "http://" + httpHost
     val props = new Properties()
-    props.load(new FileInputStream("src/main/resources/accessToken.properties"))
+    props.load(new FileInputStream("/data/spark-submit-scripts/accessToken.properties"))
     val accessToken = props.getProperty("access_token")
+
     val detectUrl = aiHost + "/detect"
 
     def downloadHttpImage(imagePath: String): Array[Byte] = {
@@ -60,7 +61,7 @@ object faceDetect {
       }
     }
 
-    val spark = SparkSession.builder().appName("detect_face_in_video").master("local[*]").getOrCreate()
+    val spark = SparkSession.builder().appName("detect_face_in_video").getOrCreate()
     // consume kafka ods topic messages which struct like ("key"->taskID,"value"->eventTime,imagePath)
     val df_ods = spark.readStream
       .format("kafka")
@@ -96,7 +97,7 @@ object faceDetect {
       .option("kafka.bootstrap.servers", dwBrokers)
 
       .option("topic", dwTopic)
-      .option("checkpointLocation", "hdfs://master:9898/checkpoints/AI5/faceDetec")
+      .option("checkpointLocation", "/data/checkpoints/faceDetect")
       .start()
 
     task.awaitTermination()
