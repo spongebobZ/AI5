@@ -4,7 +4,7 @@ import java.util.Properties
 import com.alibaba.fastjson.JSON
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.{concat_ws, size, udf}
+import org.apache.spark.sql.functions.{concat_ws, size}
 import scalaj.http.{Base64, Http}
 
 object faceDetect {
@@ -18,6 +18,7 @@ object faceDetect {
     val Array(odsBrokers, odsTopic, httpHost, aiHost, dwBrokers, dwTopic) = args
     val uri = "http://" + httpHost
     val props = new Properties()
+//    props.load(new FileInputStream("src/main/resources/accessToken.properties"))
     props.load(new FileInputStream("/data/spark-submit-scripts/accessToken.properties"))
     val accessToken = props.getProperty("access_token")
 
@@ -61,7 +62,8 @@ object faceDetect {
       }
     }
 
-    val spark = SparkSession.builder().appName("detect_face_in_video").getOrCreate()
+    val spark = SparkSession.builder().appName("detect_face_in_video")
+      .getOrCreate()
     // consume kafka ods topic messages which struct like ("key"->taskID,"value"->eventTime,imagePath)
     val df_ods = spark.readStream
       .format("kafka")
@@ -98,6 +100,7 @@ object faceDetect {
 
       .option("topic", dwTopic)
       .option("checkpointLocation", "/data/checkpoints/faceDetect")
+//      .option("checkpointLocation", "src/main/checkpoint/faceDetect")
       .start()
 
     task.awaitTermination()
