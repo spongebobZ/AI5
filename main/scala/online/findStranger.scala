@@ -1,3 +1,5 @@
+package online
+
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -8,9 +10,9 @@ import org.apache.spark.sql.functions.size
 import org.elasticsearch.hadoop.cfg.ConfigurationOptions
 import scalaj.http.Http
 
-object faceMatch {
+import scala.collection.mutable.ArrayBuffer
 
-
+object findStranger {
   def main(args: Array[String]): Unit = {
     if (args.length != 7) {
       println(s"expect for seven arguments but got ${args.length}")
@@ -23,17 +25,17 @@ object faceMatch {
     val esPort = esHost.split(":")(1)
     val props = new Properties()
     props.load(new FileInputStream("/data/spark-submit-scripts/accessToken.properties"))
+//    props.load(new FileInputStream("src/main/resources/accessToken.properties"))
     val accessToken = props.getProperty("access_token")
     val matchUrl = aiHost + "/search"
 
-    def matchFaceInMultiDB(faceTokens: String): (scala.collection.mutable.Map[String, Array[Map[String, String]]], Int) = {
+    def matchFaceNotInMultiDB(faceTokens: String): Array[String] = {
       /**
         * faceToken : faceTokens from detect result, "," as sep
-        * return : match faces and mark, mark equals 0 means image not match any face, 1 means match some faces, like
+        * return : not match faces list
         */
-      var mark = 0
       val faceList = faceTokens.split(",")
-      val resultMap = scala.collection.mutable.Map[String, Array[Map[String, String]]]()
+      val strangerList = ArrayBuffer[String]()
       for (face <- faceList) {
         val rsp = Http(matchUrl).param("access_token", accessToken)
           .postData(
@@ -52,33 +54,21 @@ object faceMatch {
         if (rsp.isSuccess) {
           val result = JSON.parseObject(rsp.body).getJSONObject("result")
           result match {
-            case null => resultMap(face) = new Array[Map[String, String]](0)
+            case null => strangerList += face
             case _ =>
-              val matches = result.getJSONArray("user_list").toArray
-              val tmpArray = new Array[Map[String, String]](matches.length)
-              for (i <- matches.indices) {
-                val tmpMatch = JSON.parseObject(matches(i).toString)
-                tmpArray(i) = Map("group_id" -> tmpMatch.getString("group_id"),
-                  "user_id" -> tmpMatch.getString("user_id"),
-                  "user_info" -> tmpMatch.getString("user_info"),
-                  "score" -> tmpMatch.getString("score"))
-              }
-              resultMap(face) = tmpArray
-              mark = 1
           }
-        } else {
-          resultMap(face) = new Array[Map[String, String]](0)
         }
       }
-      resultMap -> mark
+
+      strangerList.toArray
     }
 
-
-    val spark = SparkSession.builder().appName(s"match_faces_in_aimDB_$taskID")
+    val spark = SparkSession.builder.appName(s"find_stranger_$taskID")
       .config(ConfigurationOptions.ES_NODES, esIP)
       .config(ConfigurationOptions.ES_PORT, esPort)
       .config(ConfigurationOptions.ES_NODES_WAN_ONLY, "true")
       .getOrCreate()
+
 
     // consume kafka faceToken topic messages which struct like ("value"->taskID,eventTime,imagePath,faceTokens)
     val df_faceToken = spark.readStream
@@ -86,39 +76,41 @@ object faceMatch {
       .option("kafka.bootstrap.servers", faceTokenBrokers)
       .option("subscribe", faceTokenTopic)
       .option("startingOffsets", "latest")
-      .option("kafkaConsumer.pollTimeoutMs", 3000L)
+      .option("kafka.Consumer.pullTimeoutMs", 3000L)
       .load()
 
     // split string value with ",", get taskID,eventTime,imagePath,faceTokens info
     import spark.implicits._
-    val df_format = df_faceToken.selectExpr("CAST(value AS STRING)")
+    val df_format = df_faceToken.selectExpr("CAST(value AS string)")
       .mapPartitions(part => {
-        part.map(row => {
-          row.getAs[String]("value").split(",", 4)
-        })
+        part.map(
+          row => row.getAs[String]("value").split(",", 4)
+        )
       })
       .filter(size($"value") > 3)
       .selectExpr("value[0] AS taskID", "value[1] AS eventTime", "value[2] AS imagePath", "value[3] AS faceTokens")
 
-    // map matchFace function with column "faceTokens"
+    // apply records to match function and get result Dataframe
     val df_matchResult = df_format.filter($"taskID" === taskID)
       .mapPartitions(part => {
         part.map(row => {
-          (row.getAs[String]("taskID"), row.getAs[String]("eventTime"),
-            row.getAs[String]("imagePath"), matchFaceInMultiDB(row.getAs[String]("faceTokens")))
+          (row.getAs[String]("taskID"), row.getAs[String]("eventTime")
+            , row.getAs[String]("imagePath"), matchFaceNotInMultiDB(row.getAs[String]("faceTokens")))
         })
-      }).selectExpr("_1 AS taskID", "_2 AS eventTime", "_3 AS imagePath", "_4._1 AS matches", "_4._2 AS mark")
+      })
+      .selectExpr("_1 AS taskID", "_2 AS eventTime", "_3 AS imagePath", "_4 AS matchResult")
 
-    // filter record that had matched some face in DB
-    val df_matchFace = df_matchResult.filter($"mark" === 1)
+    val df_stranger = df_matchResult.filter(size($"matchResult") > 0)
 
-    // sink final Dataframe to es
-    val task = df_matchFace.writeStream
+    val task = df_stranger.writeStream
       .format("es")
-      .option("checkpointLocation", s"/data/checkpoints/faceMatch_$taskID")
-      .start(taskID + "/" + "matchResult")
+      .option("checkpointLocation", s"/data/checkpoints/findStranger_$taskID")
+      .start(taskID + "/" + "findStranger")
 
     task.awaitTermination()
     spark.stop()
+
+
   }
+
 }
